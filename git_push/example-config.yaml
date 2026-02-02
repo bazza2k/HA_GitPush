@@ -1,0 +1,66 @@
+# Example Configuration for Git Push Add-on
+
+# OPTION 1: SSH Authentication (Recommended)
+# -----------------------------------------
+repository: "git@github.com:yourusername/home-assistant-config.git"
+git_branch: "main"
+git_remote: "origin"
+git_user: "Your Name"
+git_email: "your.email@example.com"
+
+# Generate SSH key with: ssh-keygen -t ed25519 -C "your.email@example.com"
+# Add public key to GitHub: Settings → SSH and GPG keys
+# Copy private key here (each line as a list item):
+deployment_key:
+  - "-----BEGIN OPENSSH PRIVATE KEY-----"
+  - "your"
+  - "private"
+  - "key"
+  - "lines"
+  - "here"
+  - "-----END OPENSSH PRIVATE KEY-----"
+deployment_key_protocol: "ed25519"
+
+auto_push: true
+commit_message: "Update Home Assistant config"
+
+# Files to exclude from commits
+push_ignore:
+  - ".git/"
+  - "secrets.yaml"        # IMPORTANT: Keep secrets safe!
+  - "ip_bans.yaml"
+  - ".HA_VERSION"
+  - ".storage/"
+  - ".uuid"
+  - "home-assistant.log*"
+  - "home-assistant_v2.db*"
+  - "deps/"
+  - "tts/"
+  - "*.db"
+  - "*.db-shm"
+  - "*.db-wal"
+
+# Schedule automatic pushes
+repeat:
+  active: false
+  interval: 3600  # Every hour
+
+# -----------------------------------------
+# OPTION 2: HTTPS Authentication
+# -----------------------------------------
+# repository: "https://github.com/yourusername/home-assistant-config.git"
+# git_branch: "main"
+# git_remote: "origin"
+# git_user: "Your Name"
+# git_email: "your.email@example.com"
+# deployment_user: "yourusername"
+# deployment_password: "ghp_xxxxxxxxxxxxxxxxxxxx"  # GitHub Personal Access Token
+# auto_push: true
+# commit_message: "Update Home Assistant config"
+# push_ignore:
+#   - ".git/"
+#   - "secrets.yaml"
+#   - "*.db"
+# repeat:
+#   active: true
+#   interval: 3600

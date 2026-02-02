@@ -1,0 +1,59 @@
+name: Git Push
+version: "1.0.0"
+slug: git_push
+description: Push your Home Assistant configuration to a Git repository
+url: https://github.com/yourusername/git_push
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+init: false
+options:
+  repository: ""
+  git_branch: main
+  git_remote: origin
+  git_user: ""
+  git_email: ""
+  deployment_user: ""
+  deployment_password: ""
+  deployment_key: []
+  deployment_key_protocol: rsa
+  auto_push: false
+  commit_message: "Update Home Assistant config"
+  push_ignore:
+    - .git/
+    - secrets.yaml
+    - ip_bans.yaml
+    - .HA_VERSION
+    - .storage/
+    - .uuid
+    - home-assistant.log*
+    - deps/
+    - tts/
+    - "*.db"
+    - "*.db-shm"
+    - "*.db-wal"
+  repeat:
+    active: false
+    interval: 300
+schema:
+  repository: str
+  git_branch: str
+  git_remote: str
+  git_user: str
+  git_email: str
+  deployment_user: str
+  deployment_password: password
+  deployment_key:
+    - str
+  deployment_key_protocol: list(rsa|ed25519)
+  auto_push: bool
+  commit_message: str
+  push_ignore:
+    - str
+  repeat:
+    active: bool
+    interval: int
+image: ghcr.io/home-assistant/{arch}-addon-git_push
