@@ -1,5 +1,5 @@
 name: Git Push
-version: "1.0.0"
+version: "1.0.1"
 slug: git_push
 description: Push your Home Assistant configuration to a Git repository
 url: https://github.com/bazza2k/HA_GitPush
