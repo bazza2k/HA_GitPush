@@ -11,7 +11,9 @@ arch:
   - i386
 init: false
 map:
-  - config:rw
+  - type: homeassistant_config
+    read_only: False
+    path: /custom/config/path
 options:
   repository: ""
   git_branch: main
