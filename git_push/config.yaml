@@ -13,7 +13,7 @@ init: false
 map:
   - type: homeassistant_config
     read_only: False
-    path: /custom/config/path
+    path: /config
 options:
   repository: ""
   git_branch: main
