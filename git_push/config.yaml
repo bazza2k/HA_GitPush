@@ -56,4 +56,4 @@ schema:
   repeat:
     active: bool
     interval: int
-image: ghcr.io/bazza2k/git-push
+image: bazza2k/git-push
