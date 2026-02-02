@@ -56,4 +56,4 @@ schema:
   repeat:
     active: bool
     interval: int
-image: ghcr.io/home-assistant/{arch}-addon-git_push
+image: ghcr.io/bazza2k/git-push
