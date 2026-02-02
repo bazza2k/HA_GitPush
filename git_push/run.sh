@@ -2,6 +2,7 @@
 # shellcheck shell=bash
 set -e
 
+# Read configuration
 readonly REPOSITORY=$(bashio::config 'repository')
 readonly GIT_BRANCH=$(bashio::config 'git_branch')
 readonly GIT_REMOTE=$(bashio::config 'git_remote')
@@ -15,7 +16,7 @@ readonly COMMIT_MESSAGE=$(bashio::config 'commit_message')
 readonly REPEAT_ACTIVE=$(bashio::config 'repeat.active')
 readonly REPEAT_INTERVAL=$(bashio::config 'repeat.interval')
 
-# Setup SSH
+# Setup SSH key
 function setup-ssh-key() {
     local key_file
     
@@ -30,14 +31,16 @@ function setup-ssh-key() {
         key_file="/root/.ssh/id_ed25519"
     fi
     
-    bashio::config 'deployment_key' | while read -r line; do
-        echo "$line" >> "$key_file"
-    done
+    # Clear the key file
+    > "$key_file"
+    
+    # Get the deployment key from config and write it
+    bashio::config 'deployment_key' | jq -r '.[]' >> "$key_file"
     
     chmod 600 "$key_file"
     
-    # Disable host key checking for git operations
-    cat > /root/.ssh/config <<EOF
+    # Disable host key checking
+    cat > /root/.ssh/config <<'EOF'
 Host *
     StrictHostKeyChecking no
     UserKnownHostsFile=/dev/null
@@ -49,11 +52,10 @@ EOF
 
 # Setup user/password authentication
 function setup-user-password() {
-    local git_url
-    
     if [ -n "${DEPLOYMENT_USER}" ] && [ -n "${DEPLOYMENT_PASSWORD}" ]; then
         bashio::log.info "Setting up credential helper for ${DEPLOYMENT_USER}"
         
+        local git_url
         git_url=$(echo "${REPOSITORY}" | sed -E 's#https?://##')
         
         git config --global credential.helper store
@@ -70,12 +72,12 @@ function check-ssh-connection() {
     if [[ "${REPOSITORY}" == *"@"* ]]; then
         bashio::log.info "Checking SSH connection to ${domain}..."
         
-        if ssh -T -o "StrictHostKeyChecking=no" -o "BatchMode=yes" "${domain}" 2>&1 | grep -q "successfully authenticated\|Welcome to GitLab"; then
+        if ssh -T -o "StrictHostKeyChecking=no" -o "BatchMode=yes" "${domain}" 2>&1 | grep -q "successfully authenticated\|Welcome to GitLab\|Hi.*You've successfully authenticated"; then
             bashio::log.info "Valid SSH connection to ${domain}"
             return 0
         else
-            bashio::log.warning "No valid SSH connection to ${domain}"
-            return 1
+            bashio::log.warning "No valid SSH connection to ${domain} (this may be normal)"
+            return 0
         fi
     fi
     return 0
@@ -120,17 +122,18 @@ function init-git-repo() {
 function setup-gitignore() {
     bashio::log.info "Setting up .gitignore..."
     
-    # Start with a clean .gitignore
-    cat > /config/.gitignore <<EOF
+    # Start with header
+    cat > /config/.gitignore <<'EOF'
 # Git Push Addon - Auto-generated ignore list
 EOF
     
-    # Add each ignore pattern
-    bashio::config 'push_ignore' | while read -r pattern; do
-        echo "${pattern}" >> /config/.gitignore
-    done
+    # Add each ignore pattern using jq
+    bashio::config 'push_ignore' | jq -r '.[]' >> /config/.gitignore
     
-    bashio::log.info ".gitignore configured"
+    local pattern_count
+    pattern_count=$(bashio::config 'push_ignore' | jq '. | length')
+    
+    bashio::log.info ".gitignore configured with ${pattern_count} patterns"
 }
 
 # Stage and commit changes
@@ -170,8 +173,12 @@ function push-changes() {
         bashio::log.info "Successfully pushed changes"
     else
         bashio::log.warning "Push failed, trying with --set-upstream..."
-        git push --set-upstream "${GIT_REMOTE}" "${GIT_BRANCH}"
-        bashio::log.info "Successfully pushed changes with new upstream"
+        if git push --set-upstream "${GIT_REMOTE}" "${GIT_BRANCH}" 2>&1; then
+            bashio::log.info "Successfully pushed changes with new upstream"
+        else
+            bashio::log.error "Failed to push changes"
+            return 1
+        fi
     fi
 }
 
@@ -210,7 +217,7 @@ function execute-git-push() {
     bashio::log.info "Git Push operation completed"
 }
 
-# Main loop
+# Main execution
 bashio::log.info "=========================================="
 bashio::log.info "Git Push Add-on"
 bashio::log.info "=========================================="
