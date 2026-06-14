@@ -13,15 +13,18 @@ init: false
 map:
   - config:rw
 options:
-  repository: ""
+  git_host: ""
+  git_port: 22
+  git_repository: ""
   git_branch: main
   git_remote: origin
   git_user: ""
   git_email: ""
+  auth_method: ssh_key
   deployment_user: ""
   deployment_password: ""
   deployment_key: []
-  deployment_key_protocol: rsa
+  deployment_key_protocol: ed25519
   auto_push: false
   commit_message: "Update Home Assistant config"
   push_ignore:
@@ -35,23 +38,36 @@ options:
     - home-assistant.log*
     - deps/
     - tts/
-    - "*.db"
-    - "*.db-shm"
-    - "*.db-wal"
+    - *.db
+    - *.db-shm
+    - *.db-wal
+    - www/*
+    - custom_components/*
+    - esphome/*
+    - dwains-dashboard/*
+    - themes/*
+    - tts/*
+    - zigbee2mqtt/*.log
+    - zigbee2mqtt/log/**
+    - zigbee2mqtt/coordinator_backup.json
+    - zigbee2mqtt/database.db.tmp
   repeat:
     active: false
     interval: 300
 schema:
-  repository: str
+  git_host: str
+  git_port: int
+  git_repository: str
   git_branch: str
   git_remote: str
   git_user: str
   git_email: str
+  auth_method: list(ssh_key|https)
   deployment_user: str
   deployment_password: password
   deployment_key:
     - str
-  deployment_key_protocol: list(rsa|ed25519)
+  deployment_key_protocol: list(ed25519|rsa)
   auto_push: bool
   commit_message: str
   push_ignore:

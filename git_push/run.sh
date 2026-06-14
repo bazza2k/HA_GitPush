@@ -1,13 +1,18 @@
 #!/usr/bin/with-contenv bashio
 # shellcheck shell=bash
-set -e
+# Do NOT use set -e — handle errors explicitly
 
+# ---------------------------------------------------------------------------
 # Read configuration
-readonly REPOSITORY=$(bashio::config 'repository')
+# ---------------------------------------------------------------------------
+readonly GIT_HOST=$(bashio::config 'git_host')
+readonly GIT_PORT=$(bashio::config 'git_port')
+readonly GIT_REPOSITORY=$(bashio::config 'git_repository')
 readonly GIT_BRANCH=$(bashio::config 'git_branch')
 readonly GIT_REMOTE=$(bashio::config 'git_remote')
 readonly GIT_USER=$(bashio::config 'git_user')
 readonly GIT_EMAIL=$(bashio::config 'git_email')
+readonly AUTH_METHOD=$(bashio::config 'auth_method')
 readonly DEPLOYMENT_USER=$(bashio::config 'deployment_user')
 readonly DEPLOYMENT_PASSWORD=$(bashio::config 'deployment_password')
 readonly DEPLOYMENT_KEY_PROTOCOL=$(bashio::config 'deployment_key_protocol')
@@ -16,152 +21,141 @@ readonly COMMIT_MESSAGE=$(bashio::config 'commit_message')
 readonly REPEAT_ACTIVE=$(bashio::config 'repeat.active')
 readonly REPEAT_INTERVAL=$(bashio::config 'repeat.interval')
 
-# Setup global git configuration
+readonly SSH_DIR="/config/.addon_data/ssh"
+readonly DATA_DIR="/config/.addon_data"
+
+# ---------------------------------------------------------------------------
+# Build the remote URL depending on auth method
+#
+# SSH (port 22):  git@host:user/repo.git
+# SSH (non-22):   ssh://git@host:port/user/repo.git   <-- SCP shorthand
+#                 doesn't support custom ports, must use ssh:// URL form
+# HTTPS:          https://user:pass@host:port/user/repo.git
+# ---------------------------------------------------------------------------
+function build-repo-url() {
+    if [ "${AUTH_METHOD}" == "ssh_key" ]; then
+        if [ "${GIT_PORT}" == "22" ]; then
+            # Standard SCP-style shorthand
+            echo "git@${GIT_HOST}:${GIT_REPOSITORY}"
+        else
+            # ssh:// URL form required for non-standard ports
+            echo "ssh://git@${GIT_HOST}:${GIT_PORT}/${GIT_REPOSITORY}"
+        fi
+    else
+        # HTTPS with embedded credentials
+        local protocol="https"
+        [ "${GIT_PORT}" == "80" ] && protocol="http"
+
+        local encoded_password
+        encoded_password=$(python3 -c \
+            "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" \
+            "${DEPLOYMENT_PASSWORD}")
+
+        echo "${protocol}://${DEPLOYMENT_USER}:${encoded_password}@${GIT_HOST}:${GIT_PORT}/${GIT_REPOSITORY}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# SSH key auth setup
+# ---------------------------------------------------------------------------
+function setup-ssh() {
+    bashio::log.info "Setting up SSH authentication..."
+
+    mkdir -p "${SSH_DIR}"
+    chmod 700 "${SSH_DIR}"
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+
+    # Write private key from options.json array
+    local key_file="${SSH_DIR}/id_${DEPLOYMENT_KEY_PROTOCOL}"
+    : > "${key_file}"
+    jq -r '.deployment_key[]' /data/options.json >> "${key_file}"
+    chmod 600 "${key_file}"
+    ln -sf "${key_file}" "/root/.ssh/id_${DEPLOYMENT_KEY_PROTOCOL}"
+
+    # Write SSH client config with explicit port
+    # This ensures git ssh uses the right port for every connection to this host
+    cat > "${SSH_DIR}/config" << EOF
+Host ${GIT_HOST}
+    HostName ${GIT_HOST}
+    Port ${GIT_PORT}
+    User git
+    IdentityFile ${SSH_DIR}/id_${DEPLOYMENT_KEY_PROTOCOL}
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile ${SSH_DIR}/known_hosts
+EOF
+    chmod 600 "${SSH_DIR}/config"
+    ln -sf "${SSH_DIR}/config" /root/.ssh/config
+
+    # Scan host keys on the correct port
+    bashio::log.info "Scanning host keys for ${GIT_HOST} on port ${GIT_PORT}..."
+    if ssh-keyscan -p "${GIT_PORT}" -H "${GIT_HOST}" > "${SSH_DIR}/known_hosts" 2>/dev/null; then
+        local key_count
+        key_count=$(wc -l < "${SSH_DIR}/known_hosts")
+        bashio::log.info "Stored ${key_count} host key(s)"
+    else
+        bashio::exit.nok "ssh-keyscan failed for ${GIT_HOST}:${GIT_PORT} — check host and port"
+    fi
+    chmod 644 "${SSH_DIR}/known_hosts"
+
+    # Quick connectivity test — exit code doesn't matter for git servers,
+    # what matters is that we don't get a host key error
+    bashio::log.info "Testing SSH connectivity to ${GIT_HOST}:${GIT_PORT}..."
+    local ssh_output
+    ssh_output=$(ssh -T -o "BatchMode=yes" "${GIT_HOST}" 2>&1 || true)
+    bashio::log.info "SSH test response: ${ssh_output}"
+
+    bashio::log.info "SSH setup complete"
+}
+
+# ---------------------------------------------------------------------------
+# Global git config
+# ---------------------------------------------------------------------------
 function setup-git-config() {
-    bashio::log.info "Setting up global git configuration..."
-    
-    # Create addon data directory
-    mkdir -p /config/.addon_data
-    
-    # Setup gitconfig in /config for persistence
-    cat > /config/.addon_data/.gitconfig <<EOF
+    bashio::log.info "Writing git configuration..."
+
+    mkdir -p "${DATA_DIR}"
+    chmod 700 "${DATA_DIR}"
+
+    cat > "${DATA_DIR}/.gitconfig" << EOF
 [user]
     name = ${GIT_USER}
     email = ${GIT_EMAIL}
-[credential]
-    helper = store
 [init]
     defaultBranch = ${GIT_BRANCH}
+[http]
+    sslVerify = false
 EOF
-    
-    # Create symlink to root
-    ln -sf /config/.addon_data/.gitconfig /root/.gitconfig
-    
-    bashio::log.info "Global git configuration created"
+
+    ln -sf "${DATA_DIR}/.gitconfig" /root/.gitconfig
+    bashio::log.info "Git configuration written"
 }
 
-# Setup SSH key
-function setup-ssh-key() {
-    local key_file
-    
-    bashio::log.info "Setting up SSH key..."
-    
-    # Create addon data directory in /config for persistence
-    mkdir -p /config/.addon_data/ssh
-    chmod 700 /config/.addon_data/ssh
-    
-    # Also create /root/.ssh
-    mkdir -p /root/.ssh
-    chmod 700 /root/.ssh
-    
-    if [ "${DEPLOYMENT_KEY_PROTOCOL}" == "rsa" ]; then
-        key_file="/config/.addon_data/ssh/id_rsa"
-    else
-        key_file="/config/.addon_data/ssh/id_ed25519"
-    fi
-    
-    # Clear the key file
-    > "$key_file"
-    
-    # Get the deployment key from config and write it
-    bashio::config 'deployment_key' | jq -r '.[]' >> "$key_file"
-    
-    chmod 600 "$key_file"
-    
-    # Create symlink in /root/.ssh
-    if [ "${DEPLOYMENT_KEY_PROTOCOL}" == "rsa" ]; then
-        ln -sf "$key_file" /root/.ssh/id_rsa
-    else
-        ln -sf "$key_file" /root/.ssh/id_ed25519
-    fi
-    
-    # Setup SSH config in /config for persistence
-    cat > /config/.addon_data/ssh/config <<'EOF'
-Host *
-    StrictHostKeyChecking accept-new
-    UserKnownHostsFile=/config/.addon_data/ssh/known_hosts
-EOF
-    chmod 600 /config/.addon_data/ssh/config
-    ln -sf /config/.addon_data/ssh/config /root/.ssh/config
-    
-    # Create known_hosts file if it doesn't exist
-    touch /config/.addon_data/ssh/known_hosts
-    chmod 644 /config/.addon_data/ssh/known_hosts
-    
-    bashio::log.info "SSH key configured"
-}
-
-# Setup user/password authentication
-function setup-user-password() {
-    if [ -n "${DEPLOYMENT_USER}" ] && [ -n "${DEPLOYMENT_PASSWORD}" ]; then
-        bashio::log.info "Setting up credential helper for ${DEPLOYMENT_USER}"
-        
-        local git_url
-        git_url=$(echo "${REPOSITORY}" | sed -E 's#https?://##')
-        
-        # Setup global git config
-        git config --global credential.helper store
-        
-        # Write credentials to root directory
-        echo "https://${DEPLOYMENT_USER}:${DEPLOYMENT_PASSWORD}@${git_url}" > /root/.git-credentials
-        chmod 600 /root/.git-credentials
-        
-        # Also write to /config for persistence across restarts
-        mkdir -p /config/.addon_data
-        echo "https://${DEPLOYMENT_USER}:${DEPLOYMENT_PASSWORD}@${git_url}" > /config/.addon_data/.git-credentials
-        chmod 600 /config/.addon_data/.git-credentials
-        ln -sf /config/.addon_data/.git-credentials /root/.git-credentials
-        
-        bashio::log.info "Git credentials configured"
-    fi
-}
-
-# Check SSH connection
-function check-ssh-connection() {
-    local domain
-    domain=$(echo "${REPOSITORY}" | sed -E 's#.*@([^:]+):.*#\1#')
-    
-    if [[ "${REPOSITORY}" == *"@"* ]]; then
-        bashio::log.info "Checking SSH connection to ${domain}..."
-        
-        if ssh -T -o "StrictHostKeyChecking=no" -o "BatchMode=yes" "${domain}" 2>&1 | grep -q "successfully authenticated\|Welcome to GitLab\|Hi.*You've successfully authenticated"; then
-            bashio::log.info "Valid SSH connection to ${domain}"
-            return 0
-        else
-            bashio::log.warning "No valid SSH connection to ${domain} (this may be normal)"
-            return 0
-        fi
-    fi
-    return 0
-}
-
-# Initialize or validate git repository
+# ---------------------------------------------------------------------------
+# Init or update local git repo in /config
+# ---------------------------------------------------------------------------
 function init-git-repo() {
+    local repo_url
+    repo_url=$(build-repo-url)
+
+    bashio::log.info "Remote URL: $(echo "${repo_url}" | sed 's|://[^@]*@|://***@|')"
+
     cd /config || bashio::exit.nok "Cannot access /config directory"
-    
+
     if [ ! -d .git ]; then
-        bashio::log.info "Initializing git repository..."
+        bashio::log.info "Initialising git repository..."
         git init
-        git config user.name "${GIT_USER}"
-        git config user.email "${GIT_EMAIL}"
-        git remote add "${GIT_REMOTE}" "${REPOSITORY}"
-        bashio::log.info "Git repository initialized"
+        git remote add "${GIT_REMOTE}" "${repo_url}"
     else
-        bashio::log.info "Git repository already exists"
-        
-        # Update remote URL if changed
-        current_url=$(git remote get-url "${GIT_REMOTE}" 2>/dev/null || echo "")
-        if [ "${current_url}" != "${REPOSITORY}" ]; then
-            bashio::log.info "Updating remote URL..."
-            git remote set-url "${GIT_REMOTE}" "${REPOSITORY}"
-        fi
-        
-        # Ensure user config is set
-        git config user.name "${GIT_USER}"
-        git config user.email "${GIT_EMAIL}"
+        bashio::log.info "Git repository exists, updating remote..."
+        git remote set-url "${GIT_REMOTE}" "${repo_url}"
     fi
-    
-    # Set current branch
+
+    git config user.name "${GIT_USER}"
+    git config user.email "${GIT_EMAIL}"
+
+    local current_branch
     current_branch=$(git branch --show-current)
     if [ -z "${current_branch}" ]; then
         git checkout -b "${GIT_BRANCH}"
@@ -170,136 +164,137 @@ function init-git-repo() {
     fi
 }
 
-# Setup gitignore from push_ignore config
+# ---------------------------------------------------------------------------
+# Write .gitignore
+# ---------------------------------------------------------------------------
 function setup-gitignore() {
-    bashio::log.info "Setting up .gitignore..."
-    
-    # Start with header
-    cat > /config/.gitignore <<'EOF'
-# Git Push Addon - Auto-generated ignore list
-EOF
-    
-    # Add each ignore pattern using jq
-    bashio::config 'push_ignore' | jq -r '.[]' >> /config/.gitignore
-    
-    local pattern_count
-    pattern_count=$(bashio::config 'push_ignore' | jq '. | length')
-    
-    bashio::log.info ".gitignore configured with ${pattern_count} patterns"
+    bashio::log.info "Writing .gitignore..."
+
+    printf '# Git Push Addon - auto-generated, do not edit\n' > /config/.gitignore
+
+    local options_file="/data/options.json"
+    if [ ! -f "${options_file}" ]; then
+        bashio::log.warning "Options file not found, skipping ignore patterns"
+        return 0
+    fi
+
+    local count
+    count=$(jq '.push_ignore | length' "${options_file}")
+    [ "${count}" -gt 0 ] && jq -r '.push_ignore[]' "${options_file}" >> /config/.gitignore
+
+    bashio::log.info ".gitignore written with ${count} patterns"
 }
 
-# Stage and commit changes
+# ---------------------------------------------------------------------------
+# Commit
+# ---------------------------------------------------------------------------
 function commit-changes() {
     cd /config || bashio::exit.nok "Cannot access /config directory"
-    
-    # Add all files respecting .gitignore
+
     git add -A
-    
-    # Check if there are changes to commit
+
     if git diff --cached --quiet; then
         bashio::log.info "No changes to commit"
         return 1
     fi
-    
-    # Show what will be committed
-    bashio::log.info "Files to be committed:"
+
+    bashio::log.info "Staged files:"
     git diff --cached --name-status
-    
-    # Commit changes
+
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     git commit -m "${COMMIT_MESSAGE} - ${timestamp}"
-    
-    bashio::log.info "Changes committed"
+    bashio::log.info "Committed"
     return 0
 }
 
-# Push changes to remote
+# ---------------------------------------------------------------------------
+# Push
+# ---------------------------------------------------------------------------
 function push-changes() {
     cd /config || bashio::exit.nok "Cannot access /config directory"
-    
-    bashio::log.info "Pushing to ${GIT_REMOTE}/${GIT_BRANCH}..."
-    
-    # Try to push, handle the case where remote branch doesn't exist
-    if git push "${GIT_REMOTE}" "${GIT_BRANCH}" 2>&1; then
-        bashio::log.info "Successfully pushed changes"
+
+    local repo_url
+    repo_url=$(build-repo-url)
+
+    bashio::log.info "Pushing ${GIT_BRANCH} to ${GIT_HOST}:${GIT_PORT}..."
+
+    if git push "${repo_url}" "${GIT_BRANCH}" 2>&1; then
+        bashio::log.info "Push successful"
     else
-        bashio::log.warning "Push failed, trying with --set-upstream..."
-        if git push --set-upstream "${GIT_REMOTE}" "${GIT_BRANCH}" 2>&1; then
-            bashio::log.info "Successfully pushed changes with new upstream"
+        bashio::log.info "Retrying with --set-upstream..."
+        if git push --set-upstream "${repo_url}" "${GIT_BRANCH}" 2>&1; then
+            bashio::log.info "Push successful (upstream set)"
         else
-            bashio::log.error "Failed to push changes"
-            return 1
+            bashio::exit.nok "Push failed — check host, port, credentials and repository path"
         fi
     fi
 }
 
-# Main execution function
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 function execute-git-push() {
-    bashio::log.info "Starting Git Push operation..."
-    
-    # Setup global git configuration
+    bashio::log.info "Starting Git Push..."
+
     setup-git-config
-    
-    # Setup authentication
-    if bashio::config.has_value 'deployment_key'; then
-        setup-ssh-key
-        check-ssh-connection
+
+    if [ "${AUTH_METHOD}" == "ssh_key" ]; then
+        setup-ssh
     fi
-    
-    if bashio::config.has_value 'deployment_user'; then
-        setup-user-password
-    fi
-    
-    # Initialize repository
+
     init-git-repo
-    
-    # Setup ignore patterns
     setup-gitignore
-    
-    # Commit and push
+
     if commit-changes; then
         if [ "${AUTO_PUSH}" == "true" ]; then
             push-changes
         else
-            bashio::log.info "Changes committed but auto-push is disabled"
-            bashio::log.info "Run the addon again or enable auto_push to push changes"
+            bashio::log.info "auto_push disabled — committed locally only"
         fi
     else
         bashio::log.info "Nothing to push"
     fi
-    
-    bashio::log.info "Git Push operation completed"
+
+    bashio::log.info "Done"
 }
 
-# Main execution
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 bashio::log.info "=========================================="
-bashio::log.info "Git Push Add-on"
+bashio::log.info " Git Push Add-on"
 bashio::log.info "=========================================="
+bashio::log.info "Auth method : ${AUTH_METHOD}"
+bashio::log.info "Host        : ${GIT_HOST}"
+bashio::log.info "Port        : ${GIT_PORT}"
+bashio::log.info "Repository  : ${GIT_REPOSITORY}"
+bashio::log.info "Branch      : ${GIT_BRANCH}"
 
-# Validate configuration
-if ! bashio::config.has_value 'repository'; then
-    bashio::exit.nok "Repository URL is required"
+for field in git_host git_repository git_user git_email; do
+    if ! bashio::config.has_value "${field}"; then
+        bashio::exit.nok "Required config field '${field}' is missing"
+    fi
+done
+
+if [ "${AUTH_METHOD}" == "ssh_key" ]; then
+    if ! bashio::config.has_value 'deployment_key'; then
+        bashio::exit.nok "auth_method is ssh_key but deployment_key is missing"
+    fi
+else
+    for field in deployment_user deployment_password; do
+        if ! bashio::config.has_value "${field}"; then
+            bashio::exit.nok "auth_method is https but '${field}' is missing"
+        fi
+    done
 fi
 
-if ! bashio::config.has_value 'git_user'; then
-    bashio::exit.nok "Git user name is required"
-fi
-
-if ! bashio::config.has_value 'git_email'; then
-    bashio::exit.nok "Git email is required"
-fi
-
-# Execute push operation
 execute-git-push
 
-# Handle repeat mode
 if [ "${REPEAT_ACTIVE}" == "true" ]; then
-    bashio::log.info "Repeat mode enabled, will run every ${REPEAT_INTERVAL} seconds"
-    
+    bashio::log.info "Repeat mode — running every ${REPEAT_INTERVAL}s"
     while true; do
         sleep "${REPEAT_INTERVAL}"
-        bashio::log.info "Running scheduled push..."
         execute-git-push
     done
 else
