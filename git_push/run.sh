@@ -16,19 +16,48 @@ readonly COMMIT_MESSAGE=$(bashio::config 'commit_message')
 readonly REPEAT_ACTIVE=$(bashio::config 'repeat.active')
 readonly REPEAT_INTERVAL=$(bashio::config 'repeat.interval')
 
+# Setup global git configuration
+function setup-git-config() {
+    bashio::log.info "Setting up global git configuration..."
+    
+    # Create addon data directory
+    mkdir -p /config/.addon_data
+    
+    # Setup gitconfig in /config for persistence
+    cat > /config/.addon_data/.gitconfig <<EOF
+[user]
+    name = ${GIT_USER}
+    email = ${GIT_EMAIL}
+[credential]
+    helper = store
+[init]
+    defaultBranch = ${GIT_BRANCH}
+EOF
+    
+    # Create symlink to root
+    ln -sf /config/.addon_data/.gitconfig /root/.gitconfig
+    
+    bashio::log.info "Global git configuration created"
+}
+
 # Setup SSH key
 function setup-ssh-key() {
     local key_file
     
     bashio::log.info "Setting up SSH key..."
     
+    # Create addon data directory in /config for persistence
+    mkdir -p /config/.addon_data/ssh
+    chmod 700 /config/.addon_data/ssh
+    
+    # Also create /root/.ssh
     mkdir -p /root/.ssh
     chmod 700 /root/.ssh
     
     if [ "${DEPLOYMENT_KEY_PROTOCOL}" == "rsa" ]; then
-        key_file="/root/.ssh/id_rsa"
+        key_file="/config/.addon_data/ssh/id_rsa"
     else
-        key_file="/root/.ssh/id_ed25519"
+        key_file="/config/.addon_data/ssh/id_ed25519"
     fi
     
     # Clear the key file
@@ -39,13 +68,25 @@ function setup-ssh-key() {
     
     chmod 600 "$key_file"
     
-    # Disable host key checking
-    cat > /root/.ssh/config <<'EOF'
+    # Create symlink in /root/.ssh
+    if [ "${DEPLOYMENT_KEY_PROTOCOL}" == "rsa" ]; then
+        ln -sf "$key_file" /root/.ssh/id_rsa
+    else
+        ln -sf "$key_file" /root/.ssh/id_ed25519
+    fi
+    
+    # Setup SSH config in /config for persistence
+    cat > /config/.addon_data/ssh/config <<'EOF'
 Host *
-    StrictHostKeyChecking no
-    UserKnownHostsFile=/dev/null
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile=/config/.addon_data/ssh/known_hosts
 EOF
-    chmod 600 /root/.ssh/config
+    chmod 600 /config/.addon_data/ssh/config
+    ln -sf /config/.addon_data/ssh/config /root/.ssh/config
+    
+    # Create known_hosts file if it doesn't exist
+    touch /config/.addon_data/ssh/known_hosts
+    chmod 644 /config/.addon_data/ssh/known_hosts
     
     bashio::log.info "SSH key configured"
 }
@@ -58,9 +99,20 @@ function setup-user-password() {
         local git_url
         git_url=$(echo "${REPOSITORY}" | sed -E 's#https?://##')
         
+        # Setup global git config
         git config --global credential.helper store
+        
+        # Write credentials to root directory
         echo "https://${DEPLOYMENT_USER}:${DEPLOYMENT_PASSWORD}@${git_url}" > /root/.git-credentials
         chmod 600 /root/.git-credentials
+        
+        # Also write to /config for persistence across restarts
+        mkdir -p /config/.addon_data
+        echo "https://${DEPLOYMENT_USER}:${DEPLOYMENT_PASSWORD}@${git_url}" > /config/.addon_data/.git-credentials
+        chmod 600 /config/.addon_data/.git-credentials
+        ln -sf /config/.addon_data/.git-credentials /root/.git-credentials
+        
+        bashio::log.info "Git credentials configured"
     fi
 }
 
@@ -185,6 +237,9 @@ function push-changes() {
 # Main execution function
 function execute-git-push() {
     bashio::log.info "Starting Git Push operation..."
+    
+    # Setup global git configuration
+    setup-git-config
     
     # Setup authentication
     if bashio::config.has_value 'deployment_key'; then

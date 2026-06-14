@@ -1,8 +1,8 @@
 name: Git Push
-version: "1.0.1"
+version: "1.0.0"
 slug: git_push
 description: Push your Home Assistant configuration to a Git repository
-url: https://github.com/bazza2k/HA_GitPush
+url: https://github.com/yourusername/git_push
 arch:
   - aarch64
   - amd64
@@ -11,9 +11,7 @@ arch:
   - i386
 init: false
 map:
-  - type: homeassistant_config
-    read_only: False
-    path: /config
+  - config:rw
 options:
   repository: ""
   git_branch: main
@@ -28,6 +26,7 @@ options:
   commit_message: "Update Home Assistant config"
   push_ignore:
     - .git/
+    - .addon_data/
     - secrets.yaml
     - ip_bans.yaml
     - .HA_VERSION
@@ -60,4 +59,4 @@ schema:
   repeat:
     active: bool
     interval: int
-image: bazza2k/git-push
+image: ghcr.io/home-assistant/{arch}-addon-git_push

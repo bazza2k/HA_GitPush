@@ -1,13 +1,7 @@
-ARG BUILD_FROM
-FROM $BUILD_FROM
+FROM ghcr.io/home-assistant/aarch64-base:3.19 
 
 # Install git and other dependencies
-RUN \
-    apk add --no-cache \
-        git \
-        openssh-client \
-        bash \
-        jq
+RUN apk add --no-cache git openssh-client bash jq
 
 # Copy run script
 COPY run.sh /
