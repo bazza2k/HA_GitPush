@@ -38,9 +38,9 @@ options:
     - home-assistant.log*
     - deps/
     - tts/
-    - *.db
-    - *.db-shm
-    - *.db-wal
+    - "*.db"
+    - "*.db-shm"
+    - "*.db-wal"
     - www/*
     - custom_components/*
     - esphome/*
